@@ -59,13 +59,14 @@ function MarkdownMessage({ content }: { content: string }) {
 
 export function ChatInterface({ onTasksUpdate }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [isConnected, setIsConnected] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [input, setInput] = useState<string>("");
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -89,6 +90,11 @@ export function ChatInterface({ onTasksUpdate }: ChatInterfaceProps) {
       ws.onmessage = (event) => {
         try {
           const data: ChatResponse = JSON.parse(event.data);
+          
+          // Store session ID from response
+          if (data.session_id) {
+            setSessionId(data.session_id);
+          }
           
           // Add assistant message
           const assistantMessage: Message = {
@@ -132,6 +138,7 @@ export function ChatInterface({ onTasksUpdate }: ChatInterfaceProps) {
       console.error("Failed to create WebSocket:", err);
       setError("Failed to connect to chat service");
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onTasksUpdate]);
 
   // Initialize WebSocket connection
@@ -166,11 +173,19 @@ export function ChatInterface({ onTasksUpdate }: ChatInterfaceProps) {
 
     try {
       if (isConnected && wsRef.current?.readyState === WebSocket.OPEN) {
-        // Send via WebSocket
-        wsRef.current.send(JSON.stringify({ message: userMessage.content }));
+        // Send via WebSocket with session ID
+        wsRef.current.send(JSON.stringify({ 
+          message: userMessage.content,
+          session_id: sessionId 
+        }));
       } else {
         // Fallback to HTTP if WebSocket is not connected
-        const response = await apiClient.sendChatMessage(userMessage.content);
+        const response = await apiClient.sendChatMessage(userMessage.content, sessionId);
+        
+        // Store session ID from response
+        if (response.session_id) {
+          setSessionId(response.session_id);
+        }
         
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),

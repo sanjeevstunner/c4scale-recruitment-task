@@ -40,11 +40,23 @@ class TaskResponse(TaskBase):
 class ChatMessage(BaseModel):
     """Schema for chat messages."""
     message: str
+    session_id: Optional[str] = None
     timestamp: Optional[datetime] = None
 
 
 class ChatResponse(BaseModel):
     """Schema for chat response."""
     response: str
+    session_id: str
     tasks: Optional[list[TaskResponse]] = None
     timestamp: datetime
+
+
+class ChatHistoryMessage(BaseModel):
+    """Schema for chat history messages."""
+    role: str
+    content: str
+    timestamp: datetime
+    
+    class Config:
+        from_attributes = True

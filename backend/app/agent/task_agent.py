@@ -5,6 +5,8 @@ from langgraph.prebuilt import create_react_agent
 from sqlalchemy.orm import Session
 from app.agent.tools import TaskTools
 from app.config import get_settings
+from app.models import ChatSession, ChatMessage as DBChatMessage
+import uuid
 
 
 class TaskManagementAgent:
@@ -120,23 +122,77 @@ class TaskManagementAgent:
             self.tools
         )
     
-    def process_message(self, message: str) -> Dict[str, Any]:
+    def _get_or_create_session(self, session_id: str = None) -> ChatSession:
+        """Get existing session or create a new one."""
+        if session_id:
+            session = self.db.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if session:
+                return session
+        
+        # Create new session
+        new_session = ChatSession(id=str(uuid.uuid4()))
+        self.db.add(new_session)
+        self.db.commit()
+        return new_session
+    
+    def _load_conversation_history(self, session_id: str) -> List[tuple]:
+        """Load conversation history from database."""
+        messages = self.db.query(DBChatMessage).filter(
+            DBChatMessage.session_id == session_id
+        ).order_by(DBChatMessage.timestamp).all()
+        
+        history = []
+        for msg in messages:
+            if msg.role in ['user', 'assistant', 'system']:
+                history.append((msg.role, msg.content))
+        
+        return history
+    
+    def _save_message(self, session_id: str, role: str, content: str):
+        """Save a message to the database."""
+        message = DBChatMessage(
+            session_id=session_id,
+            role=role,
+            content=content
+        )
+        self.db.add(message)
+        self.db.commit()
+    
+    def process_message(self, message: str, session_id: str = None) -> Dict[str, Any]:
         """
         Process a user message and return the agent's response.
         
         Args:
             message: User's natural language message
+            session_id: Optional session ID for conversation continuity
         
         Returns:
-            Dictionary containing the response and any relevant task data
+            Dictionary containing the response, session_id, and any relevant task data
         """
         try:
-            # Invoke the agent with system message and user message
+            # Get or create session
+            session = self._get_or_create_session(session_id)
+            session_id = session.id
+            
+            # Save user message
+            self._save_message(session_id, "user", message)
+            
+            # Load conversation history
+            history = self._load_conversation_history(session_id)
+            
+            # Build message list with system message, history, and current message
+            messages = [("system", self.system_message)]
+            
+            # Add conversation history (excluding the current message we just saved)
+            if len(history) > 1:  # More than just the current message
+                messages.extend(history[:-1])  # Exclude the last message (current one)
+            
+            # Add current user message
+            messages.append(("user", message))
+            
+            # Invoke the agent
             result = self.agent.invoke({
-                "messages": [
-                    ("system", self.system_message),
-                    ("user", message)
-                ]
+                "messages": messages
             })
             
             # Log the result for debugging
@@ -144,8 +200,8 @@ class TaskManagementAgent:
             import json
             
             # Log all messages including tool responses
-            messages = result.get("messages", [])
-            for i, msg in enumerate(messages):
+            result_messages = result.get("messages", [])
+            for i, msg in enumerate(result_messages):
                 msg_type = getattr(msg, 'type', 'unknown')
                 if msg_type == 'tool':
                     logging.info(f"Tool response {i}: {msg.content}")
@@ -153,12 +209,11 @@ class TaskManagementAgent:
                     content = getattr(msg, 'content', '')
                     logging.info(f"AI message {i}: {content[:200]}...")
             
-            logging.info(f"Total messages in result: {len(messages)}")
+            logging.info(f"Total messages in result: {len(result_messages)}")
             
             # Extract the final response
-            messages = result.get("messages", [])
-            if messages:
-                final_message = messages[-1]
+            if result_messages:
+                final_message = result_messages[-1]
                 response_content = final_message.content if hasattr(final_message, 'content') else str(final_message)
                 
                 # Handle case where content is a list (sometimes happens with LangChain)
@@ -177,12 +232,16 @@ class TaskManagementAgent:
             else:
                 response_text = "I processed your request."
             
+            # Save assistant response
+            self._save_message(session_id, "assistant", response_text)
+            
             # Extract task data from tool calls if any
             tasks_data = self._extract_tasks_from_result(result)
             
             return {
                 "success": True,
                 "response": response_text,
+                "session_id": session_id,
                 "tasks": tasks_data
             }
         except Exception as e:
@@ -192,6 +251,7 @@ class TaskManagementAgent:
             return {
                 "success": False,
                 "response": f"I encountered an error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}",
+                "session_id": session_id if session_id else None,
                 "tasks": None
             }
     

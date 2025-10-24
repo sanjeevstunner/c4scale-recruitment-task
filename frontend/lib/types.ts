@@ -31,11 +31,13 @@ export interface UpdateTaskRequest {
 
 export interface ChatMessage {
   message: string;
+  session_id?: string | null;
   timestamp?: string;
 }
 
 export interface ChatResponse {
   response: string;
+  session_id: string;
   tasks: Task[] | null;
   timestamp: string;
 }

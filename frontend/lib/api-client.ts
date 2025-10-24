@@ -268,8 +268,11 @@ class ApiClient {
   /**
    * Send a message to the AI agent (HTTP)
    */
-  public async sendChatMessage(message: string): Promise<ChatResponse> {
-    return this.post<ChatResponse>("/chat/message", { message });
+  public async sendChatMessage(message: string, sessionId?: string | null): Promise<ChatResponse> {
+    return this.post<ChatResponse>("/chat/message", { 
+      message,
+      session_id: sessionId 
+    });
   }
 
   /**

@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import List
 import json
 from app.database import get_db
-from app.schemas import ChatMessage, ChatResponse
+from app.schemas import ChatMessage, ChatResponse, ChatHistoryMessage
 from app.agent.task_agent import TaskManagementAgent
+from app.models import ChatSession, ChatMessage as DBChatMessage
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -38,17 +39,41 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+@router.get("/history/{session_id}", response_model=List[ChatHistoryMessage])
+async def get_chat_history(session_id: str, db: Session = Depends(get_db)):
+    """
+    Retrieve chat history for a specific session.
+    """
+    # Check if session exists
+    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Get all messages for this session
+    messages = db.query(DBChatMessage).filter(
+        DBChatMessage.session_id == session_id
+    ).order_by(DBChatMessage.timestamp).all()
+    
+    return [ChatHistoryMessage(
+        role=msg.role,
+        content=msg.content,
+        timestamp=msg.timestamp
+    ) for msg in messages]
+
+
 @router.post("/message", response_model=ChatResponse)
 async def send_message(message: ChatMessage, db: Session = Depends(get_db)):
     """
     Send a message to the AI agent via HTTP POST.
     Alternative to WebSocket for simpler integrations.
+    Supports session-based conversation history.
     """
     agent = TaskManagementAgent(db)
-    result = agent.process_message(message.message)
+    result = agent.process_message(message.message, session_id=message.session_id)
     
     return ChatResponse(
         response=result["response"],
+        session_id=result["session_id"],
         tasks=result.get("tasks"),
         timestamp=datetime.now()
     )
@@ -58,15 +83,18 @@ async def send_message(message: ChatMessage, db: Session = Depends(get_db)):
 async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for real-time chat with the AI agent.
+    Supports session-based conversation history.
     
     Message format (client -> server):
     {
-        "message": "create a task to buy groceries"
+        "message": "create a task to buy groceries",
+        "session_id": "optional-session-uuid"
     }
     
     Response format (server -> client):
     {
         "response": "I've created a task...",
+        "session_id": "session-uuid",
         "tasks": [...],
         "timestamp": "2025-10-21T12:48:07"
     }
@@ -85,12 +113,16 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             message_data = json.loads(data)
             
-            # Process message with agent
-            result = agent.process_message(message_data.get("message", ""))
+            # Process message with agent (with session support)
+            result = agent.process_message(
+                message_data.get("message", ""),
+                session_id=message_data.get("session_id")
+            )
             
             # Send response back to client
             response = {
                 "response": result["response"],
+                "session_id": result["session_id"],
                 "tasks": result.get("tasks"),
                 "timestamp": datetime.now().isoformat()
             }
@@ -103,6 +135,7 @@ async def websocket_endpoint(websocket: WebSocket):
         import traceback
         error_response = {
             "response": f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}",
+            "session_id": None,
             "tasks": None,
             "timestamp": datetime.now().isoformat()
         }
